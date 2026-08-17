@@ -22,12 +22,20 @@ function logToFile(msg) {
 }
 
 const MODEL_MAP = {
+  "claude-sonnet-4.5-1m": "claude-sonnet-4.5-1m",
+  "sonnet-1m": "claude-sonnet-4.5-1m",
   "claude-sonnet-4.5": "claude-sonnet-4.5",
   "sonnet-4.5": "claude-sonnet-4.5",
   "claude-3-7-sonnet": "CLAUDE_3_7_SONNET_20250219_V1_0",
   "sonnet": "CLAUDE_3_7_SONNET_20250219_V1_0",
   "claude-sonnet-4": "claude-sonnet-4",
   "sonnet-4": "claude-sonnet-4",
+  "claude-haiku-4.5": "claude-haiku-4.5",
+  "haiku": "claude-haiku-4.5",
+  "claude-3-5-sonnet-v2": "CLAUDE_3_5_SONNET_20241022_V2_0",
+  "sonnet-35-v2": "CLAUDE_3_5_SONNET_20241022_V2_0",
+  "claude-3-5-sonnet-v1": "CLAUDE_3_5_SONNET_20240620_V1_0",
+  "sonnet-35-v1": "CLAUDE_3_5_SONNET_20240620_V1_0",
   "deepseek-3.2": "deepseek-3.2",
   "deepseek": "deepseek-3.2",
   "qwen3-coder-next": "qwen3-coder-next",
@@ -36,6 +44,7 @@ const MODEL_MAP = {
   "glm": "glm-5",
   "minimax-m2.5": "minimax-m2.5",
   "minimax": "minimax-m2.5",
+  "minimax-m2.1": "minimax-m2.1",
   "auto": "auto",
 }
 
