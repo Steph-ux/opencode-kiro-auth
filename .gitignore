@@ -1,0 +1,5 @@
+node_modules/
+kiro-accounts.json
+accounts.json
+proxy.log
+*.log

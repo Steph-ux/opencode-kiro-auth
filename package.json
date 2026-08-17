@@ -1,0 +1,14 @@
+{
+  "name": "opencode-kiro-auth",
+  "version": "1.0.0",
+  "description": "Amazon Q / CodeWhisperer (Kiro) Multi-Account Proxy for OpenCode",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "login": "node login.mjs"
+  },
+  "dependencies": {
+    "@aws/codewhisperer-streaming-client": "^1.0.45"
+  }
+}
