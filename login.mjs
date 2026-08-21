@@ -138,6 +138,9 @@ async function main() {
         }
 
         saveAccounts(pool)
+        exec("pm2 restart kiro-proxy", () => {
+          console.log("[+] Proxy kiro-proxy redémarré sur PM2")
+        })
 
         console.log("\n=======================================================")
         console.log("  🎉 CONNEXION RÉUSSIE ! COMPTE SAUVEGARDÉ DANS LE POOL")

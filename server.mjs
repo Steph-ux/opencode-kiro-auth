@@ -235,13 +235,21 @@ function transformMessages(messages, targetModel) {
     }
   }
 
-  // Prepend system prompt to the first user message or history
+  // Prepend system prompt to the first user message or history (with safe max length)
+  const MAX_CONTENT_LENGTH = 8000
   if (systemPrompt) {
+    const safeSystem = systemPrompt.length > 4000 ? systemPrompt.slice(0, 4000) + "\n\n[... system instructions compacted ...]" : systemPrompt
     if (history.length > 0 && history[0].userInputMessage) {
-      history[0].userInputMessage.content = `${systemPrompt}\n\n${history[0].userInputMessage.content}`
+      const combined = `${safeSystem}\n\n${history[0].userInputMessage.content}`
+      history[0].userInputMessage.content = combined.length > MAX_CONTENT_LENGTH ? combined.slice(0, MAX_CONTENT_LENGTH) : combined
     } else if (currentUserText) {
-      currentUserText = `${systemPrompt}\n\n${currentUserText}`
+      const combined = `${safeSystem}\n\n${currentUserText}`
+      currentUserText = combined.length > MAX_CONTENT_LENGTH ? combined.slice(0, MAX_CONTENT_LENGTH) : combined
     }
+  }
+
+  if (currentUserText.length > MAX_CONTENT_LENGTH) {
+    currentUserText = currentUserText.slice(0, MAX_CONTENT_LENGTH)
   }
 
   if (!currentUserText && currentToolResults.length > 0) {
@@ -297,12 +305,50 @@ async function handleChatCompletions(req, res) {
     const registry = createToolNameRegistry(body.tools || [])
     const cwTools = body.tools && body.tools.length > 0 ? convertToolsToCodeWhisperer(body.tools, registry) : undefined
     const toolNameMap = registry.toOriginalMap()
-
     const { history, userInputMessage } = transformMessages(body.messages || [], targetModel)
 
-    if (cwTools && cwTools.length > 0) {
+    // Collect all tool names called in history
+    const historyToolNames = new Set()
+    for (const entry of history) {
+      if (entry.assistantResponseMessage?.toolUses) {
+        for (const tu of entry.assistantResponseMessage.toolUses) {
+          if (tu.name) historyToolNames.add(tu.name)
+        }
+      }
+    }
+
+    // Build complete tools array ensuring all historical tools are defined for Bedrock toolConfig
+    const clientTools = cwTools || []
+    const existingToolNames = new Set(clientTools.map((t) => t.toolSpecification?.name))
+    const synthesizedTools = [...clientTools]
+
+    for (const name of historyToolNames) {
+      if (!existingToolNames.has(name)) {
+        synthesizedTools.push({
+          toolSpecification: {
+            name,
+            description: `Tool ${name} from conversation history`,
+            inputSchema: { json: { type: "object", properties: {} } },
+          },
+        })
+        existingToolNames.add(name)
+      }
+    }
+
+    // If current turn has tool results but no tools, provide placeholder
+    if (synthesizedTools.length === 0 && (userInputMessage.userInputMessageContext?.toolResults?.length > 0 || historyToolNames.size > 0)) {
+      synthesizedTools.push({
+        toolSpecification: {
+          name: "placeholder_tool",
+          description: "Placeholder tool for Bedrock toolConfig compatibility",
+          inputSchema: { json: { type: "object", properties: {} } },
+        },
+      })
+    }
+
+    if (synthesizedTools.length > 0) {
       if (!userInputMessage.userInputMessageContext) userInputMessage.userInputMessageContext = {}
-      userInputMessage.userInputMessageContext.tools = cwTools
+      userInputMessage.userInputMessageContext.tools = synthesizedTools
     }
 
     const commandInput = {
@@ -314,12 +360,15 @@ async function handleChatCompletions(req, res) {
       },
     }
 
+    console.log("[DEBUG commandInput]", JSON.stringify(commandInput, null, 2))
+
     const maxRetries = pool.accounts.length || 1
+    let lastError = null
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const account = pool.activeAccount
       if (!account) {
         res.writeHead(500, { "Content-Type": "application/json" })
-        return res.end(JSON.stringify({ error: "No active Kiro accounts in pool" }))
+        return res.end(JSON.stringify({ error: { message: "No active Kiro accounts in pool. Run 'npm run login' to add an account." } }))
       }
 
       try {
@@ -336,17 +385,24 @@ async function handleChatCompletions(req, res) {
 
           let fullContent = ""
           let fullReasoning = ""
+          let firstContentChunk = true
+          let firstReasoningChunk = true
+          let hasToolCalls = false
 
           for await (const chunk of response.generateAssistantResponseResponse) {
             if (chunk.reasoningContentEvent?.text) {
               const text = chunk.reasoningContentEvent.text
               fullReasoning += text
+              const delta = firstReasoningChunk
+                ? { role: "assistant", reasoning_content: text }
+                : { reasoning_content: text }
+              firstReasoningChunk = false
               const sse = {
                 id: convId,
                 object: "chat.completion.chunk",
                 created: Math.floor(Date.now() / 1000),
                 model: rawModel,
-                choices: [{ index: 0, delta: { reasoning_content: text }, finish_reason: null }],
+                choices: [{ index: 0, delta, finish_reason: null }],
               }
               res.write(`data: ${JSON.stringify(sse)}\n\n`)
             }
@@ -354,17 +410,22 @@ async function handleChatCompletions(req, res) {
             if (chunk.assistantResponseEvent?.content) {
               const text = chunk.assistantResponseEvent.content
               fullContent += text
+              const delta = firstContentChunk && firstReasoningChunk
+                ? { role: "assistant", content: text }
+                : { content: text }
+              firstContentChunk = false
               const sse = {
                 id: convId,
                 object: "chat.completion.chunk",
                 created: Math.floor(Date.now() / 1000),
                 model: rawModel,
-                choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+                choices: [{ index: 0, delta, finish_reason: null }],
               }
               res.write(`data: ${JSON.stringify(sse)}\n\n`)
             }
 
             if (chunk.assistantResponseEvent?.toolUse) {
+              hasToolCalls = true
               const tu = chunk.assistantResponseEvent.toolUse
               const origName = restoreToolName(tu.name, toolNameMap)
               const sse = {
@@ -401,7 +462,7 @@ async function handleChatCompletions(req, res) {
             object: "chat.completion.chunk",
             created: Math.floor(Date.now() / 1000),
             model: rawModel,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            choices: [{ index: 0, delta: {}, finish_reason: hasToolCalls ? "tool_calls" : "stop" }],
             usage: {
               prompt_tokens: Math.ceil((bodyStr.length / 4) * 0.8),
               completion_tokens: Math.ceil((fullContent.length + fullReasoning.length) / 4),
@@ -460,14 +521,22 @@ async function handleChatCompletions(req, res) {
           return res.end(JSON.stringify(out, null, 2))
         }
       } catch (e) {
+        lastError = e
         console.error(`[Proxy] Error with account ${account.email}:`, e.name, e.message)
         logToFile(`[Error] ${account.email} failed: ${e.name} - ${e.message}`)
         pool.rotate()
       }
     }
 
+    const errorDetail = lastError ? ` (${lastError.name}: ${lastError.message})` : ""
     res.writeHead(502, { "Content-Type": "application/json" })
-    res.end(JSON.stringify({ error: { message: "All Kiro accounts exhausted or error occurred." } }))
+    res.end(
+      JSON.stringify({
+        error: {
+          message: `All Kiro accounts exhausted or error occurred${errorDetail}. Please run 'npm run login' in opencode-kiro-auth to authenticate.`,
+        },
+      })
+    )
   })
 }
 
